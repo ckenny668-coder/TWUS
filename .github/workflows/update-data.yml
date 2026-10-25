@@ -1,1 +1,65 @@
+# 每天自動更新 data/*.json（美股、台股各一次）。放在 .github/workflows/update-data.yml
+# 時間是 UTC：台股 07:30 = 台北 15:30（收盤後）；美股 22:30 = 台北隔天 06:30（夏令/冬令收盤後都已過）
+name: update-data
 
+on:
+  schedule:
+    - cron: "30 7 * * 1-5"     # 台股
+    - cron: "30 22 * * 1-5"    # 美股
+  workflow_dispatch:           # 也可以在 Actions 頁面手動執行
+    inputs:
+      market:
+        description: "us / tw / all"
+        default: "all"
+
+permissions:
+  contents: write              # 允許把更新後的 data/*.json 提交回專案
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安裝套件
+        run: pip install -r requirements.txt
+
+      - name: 決定要更新哪個市場
+        id: m
+        run: |
+          case "${{ github.event.schedule }}" in
+            "30 7 * * 1-5")  echo "market=tw" >> "$GITHUB_OUTPUT" ;;
+            "30 22 * * 1-5") echo "market=us" >> "$GITHUB_OUTPUT" ;;
+            *)               echo "market=${{ github.event.inputs.market || 'all' }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: 美股趨勢突破
+        if: steps.m.outputs.market == 'us' || steps.m.outputs.market == 'all'
+        run: python screener.py --universe sp500 --out data
+
+      - name: 台股趨勢突破
+        if: steps.m.outputs.market == 'tw' || steps.m.outputs.market == 'all'
+        run: python screener.py --universe tw --out data
+
+      - name: 提交更新
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p data
+          git add data/*.json
+          if git diff --cached --quiet; then
+            echo "資料沒有變動"
+          else
+            git commit -m "update data ($(date -u +%Y-%m-%d))"
+            git pull --rebase
+            git push
+          fi
